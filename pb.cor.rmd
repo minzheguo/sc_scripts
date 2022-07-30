@@ -1,0 +1,181 @@
+---
+title: "Pseudo-bulk based comparison of cell types in two Seurat objects"
+author: "Minzhe Guo, Cheng Jiang"
+date: 'Compiled: `r Sys.Date()`'
+output: 
+  html_document:
+  theme: united
+  df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  message = FALSE,
+  warning = FALSE,
+  time_it = TRUE
+)
+```
+
+### Introduction
+In this document, We will be using two publicly-available human PBMC datasets as an example to demonstrate the comparison of cell types in two Seurat objects based on pseudo-bulk expression profiles and  highly variable genes.
+
+### Loading pacakge
+First, load in Seurat and packages that will be used in this demo. 
+```{r Libraries}
+library(Seurat)
+library(pheatmap)
+library(ggplot2)
+library(patchwork)
+```
+
+### Data preparation
+The example datasets that we will use for demonstration are available through SeuratData package (https://github.com/satijalab/seurat-data). 
+```{r Read Data}
+# load the SeuratData pacakge
+library(SeuratData)
+```
+
+Let's download the two example human PBMC datasets from SeuratData using InstallData(). 
+````{r download data}
+InstallData("ifnb")
+InstallData("pbmcsca")
+```
+
+Load the first dataset "ifnb" and assign it to the variable "data1". 
+Check the object and avaialble cell metadata information. 
+We can see that the data is already a Seurat object, containing an RNA assay of 14,503 features in 13,999 cells.
+The celltype annotations are in the  "seurat_annotations" column of meta.data.
+The data is likely not normalized, as the max value of the "data" slot is a large integer. 
+Run NormalizedData() to normalize the data.
+
+```{r}
+data("ifnb")
+data1 = ifnb
+
+data1
+
+head(data1@meta.data)
+
+max(data1@assays$RNA@data)
+
+data1 = NormalizeData(data1, verbose = F)
+```
+
+Load the second dataset "pbmcsca" and assign it to the variable "data2". 
+Check the object and avaialble cell metadata information. 
+We can see that the data is also a Seurat object, containing an RNA assay of 33,694 features in 31,021 cells. 
+The celltype annotations are in the  "CellType" column of meta.data.
+The data is also likely not normalized, as the max value of the "data" slot is a large integer. 
+Run NormalizedData() to normalize the data.
+```{r}
+data("pbmcsca")
+data2 = pbmcsca
+
+data2
+
+head(data2@meta.data)
+
+max(data2@assays$RNA@data)
+
+data2 = NormalizeData(data2, verbose = F)
+```
+
+### Create pseudo-bulk profiles
+
+Create a pseudo-bulk profile for each cell type in each dataset. 
+A pseudo-bulk profile is comprised of each gene's averaged expression in a cell type.
+
+```{r}
+# set the cell type annotation as the active identity of the Seurat object
+data1 = SetIdent(data1, value=data1@meta.data$seurat_annotations)
+data2 = SetIdent(data2, value=data2@meta.data$CellType)
+
+# Use AverageExpression() to calculate each gene's average expression in each cell type.
+# By setting return.seurat=T, the results will be returned as a Seurat object
+data1.avg = AverageExpression(data1, assay="RNA", slot="data", return.seurat = T)
+data2.avg = AverageExpression(data2, assay="RNA", slot="data", return.seurat = T)
+```
+### Find highly variable genes
+Find highly variable genes that have expression in both datasets for the correlation calculation.
+
+```{r}
+# first, find top 2000 most highly variable genes (HVGs) within each dataset
+data1.avg = FindVariableFeatures(data1.avg, nfeatures = 2000)
+data2.avg = FindVariableFeatures(data2.avg, nfeatures = 2000)
+
+# union the HVGs from the two datasets
+hvg.use = union(data1.avg@assays$RNA@var.features, 
+                   data2.avg@assays$RNA@var.features)
+cat(length(hvg.use), "HVGs identitied from the two datasets\n")
+
+# keep HVGs that have expression in both datasets
+hvg.use = hvg.use[which(hvg.use %in% rownames(data1.avg@assays$RNA@data))]
+hvg.use = hvg.use[which(hvg.use %in% rownames(data2.avg@assays$RNA@data))]
+
+cat("Use", length(hvg.use), "HVGs that have expression in both datasets\n")
+
+```
+
+Scale pseudo-bulk expression of the HVGs
+```{r}
+data1.avg = ScaleData(data1.avg, features = hvg.use)
+data2.avg = ScaleData(data2.avg, features = hvg.use)
+```
+
+Create a matrix that combines the scaled pseudo-bulk expression of HVGs in different datasets 
+```{r}
+# get the scaled pseudo-bulk expression of the HVGs
+data1.data = data1.avg@assays$RNA@scale.data
+data2.data = data2.avg@assays$RNA@scale.data
+
+# add suffix to column names (cell types) to distinguish the data from different datasets
+colnames(data1.data) = paste0(colnames(data1.data), ".data1")
+colnames(data2.data) = paste0(colnames(data2.data), ".data2")
+
+# combine the data to create an expression matrix
+expr_mat = cbind(data1.data, data2.data[rownames(data1.data), ])
+
+# make sure no missing values generated
+any(is.na(expr_mat))
+```
+
+### Correlations and Visualization
+```{r Correlation, fig.width=10, fig.height=11}
+
+# calcualte the correlations of cell types using scaled pseudo-bulk expression of HVGs
+cor_mat = cor(expr_mat)
+
+# visualize the correlations using pheatmap;
+# by setting display_numbers = T, the correlation values will be shown on the heatmap;
+# use the round() function to round the correlation values to two decimal places for better display
+g = pheatmap::pheatmap(round(cor_mat, digits = 2), 
+                       clustering_method = "complete", 
+                       display_numbers = T
+                       )
+
+
+# save the heatmap to a tif file
+tiff(filename = "cor_heatmap.tif", width=12, height=11, res=300, units="in", compression="lzw")
+print(g)
+dev.off()
+
+# save the HVG expression matrix and the correlation matrix as source data
+sourcedata = list(hvg.expression=expr_mat, correlations=cor_mat)
+save(sourcedata, file="sourcedata.rda")
+
+```
+
+
+<details open>
+
+<summary>
+
+**Session Info**
+
+</summary>
+
+```{r}
+sessionInfo()
+```
