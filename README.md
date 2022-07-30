@@ -1,4 +1,3 @@
 # Code scripts for single cell data analysis
 
-Scrublet_Helper.R: functions to faciliate Scrublet analysis
-SoupX_Helper.R: functions to faciliate SoupX analysis
+pb.cor: pseudo-bulk based comparison of cell types in two Seurat objects
